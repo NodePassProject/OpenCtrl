@@ -1,0 +1,20 @@
+version: 2
+
+project_name: openctrl
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    main: ./cmd/openctrl
+    goos:
+      - darwin
+      - freebsd
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Tag }}
