@@ -15,20 +15,40 @@ import (
 	"time"
 )
 
+// tlsMode mirrors the public tls query parameter.
+//
+// The numeric values are intentionally stable because they are surfaced through
+// the info endpoint and used in master:// URL configuration.
 type tlsMode int
 
 const (
+	// tlsNone disables TLS when the caller explicitly allows plaintext. It is
+	// useful for local-only deployments and reverse-proxy termination.
 	tlsNone tlsMode = iota
+	// tlsSelfSigned generates an in-memory certificate for private deployments.
+	// The certificate is not persisted and changes on each process start.
 	tlsSelfSigned
+	// tlsCATrusted loads operator-provided certificate files from crt/key URL
+	// parameters and supports periodic reload.
 	tlsCATrusted
 )
 
+// serverTLSOptions captures the policy differences between server entrypoints.
+//
+// allowNone lets the master API run in plaintext, while stricter callers can
+// require TLS by setting it false. nextProtos is passed through for protocols
+// that need ALPN without changing the shared TLS loader.
 type serverTLSOptions struct {
 	defaultMode tlsMode
 	allowNone   bool
 	nextProtos  []string
 }
 
+// newTLSConfig returns an in-memory self-signed certificate chain.
+//
+// The certificate is sufficient for encrypted private control-plane traffic
+// where trust is established out of band. It uses ECDSA P-256 and a one-year
+// validity window to keep generation fast and the TLS configuration modern.
 func newTLSConfig() (*tls.Config, error) {
 	private, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -58,6 +78,8 @@ func newTLSConfig() (*tls.Config, error) {
 		return nil, fmt.Errorf("Master.newTLSConfig: marshal private key failed: %w", err)
 	}
 
+	// Use PKCS#8 for broad tooling compatibility and keep both PEM blocks only
+	// in memory.
 	crtPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: crtBytes})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyBytes})
 
@@ -69,6 +91,12 @@ func newTLSConfig() (*tls.Config, error) {
 	return &tls.Config{Certificates: []tls.Certificate{cert}}, nil
 }
 
+// newServerTLSConfig resolves the tls/crt/key URL parameters into a server TLS
+// configuration and the mode reported by the API.
+//
+// Empty tls uses opts.defaultMode. tls=0 is only accepted when allowNone is
+// true. tls=2 requires crt/key to load successfully at startup so the server
+// never begins with an invalid certificate configuration.
 func newServerTLSConfig(parsedURL *url.URL, opts serverTLSOptions) (tlsMode, *tls.Config, error) {
 	mode := opts.defaultMode
 	switch parsedURL.Query().Get("tls") {
@@ -104,6 +132,9 @@ func newServerTLSConfig(parsedURL *url.URL, opts serverTLSOptions) (tlsMode, *tl
 		)
 		tlsConfig = &tls.Config{
 			GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+				// Reload lazily from the handshake path. Double-check under the
+				// write lock so concurrent handshakes do not all hit disk after
+				// the interval elapses.
 				mu.RLock()
 				shouldReload := time.Since(lastReload) >= reloadInterval
 				mu.RUnlock()
@@ -135,11 +166,16 @@ func newServerTLSConfig(parsedURL *url.URL, opts serverTLSOptions) (tlsMode, *tl
 		}
 	}
 
+	// TLS 1.3 is the minimum supported version for the control-plane server.
 	tlsConfig.MinVersion = tls.VersionTLS13
 	tlsConfig.NextProtos = opts.nextProtos
 	return mode, tlsConfig, nil
 }
 
+// String returns the stable wire value used by the info endpoint.
+//
+// It deliberately returns the URL parameter values instead of Go enum names so
+// clients can round-trip the mode back into master:// configuration.
 func (m tlsMode) String() string {
 	switch m {
 	case tlsSelfSigned:
