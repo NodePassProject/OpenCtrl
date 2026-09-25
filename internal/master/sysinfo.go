@@ -9,19 +9,8 @@ import (
 	"time"
 )
 
-// diskPartitionRegexp filters partition rows so disk counters represent whole
-// block devices instead of double-counted child partitions.
-//
-// Linux diskstats reports both disks and partitions. Counting both inflates
-// totals, so this expression matches common partition naming schemes while
-// leaving whole devices to be accumulated.
 var diskPartitionRegexp = regexp.MustCompile(`^(?:sd[a-z]+|vd[a-z]+|xvd[a-z]+|hd[a-z]+)\d+$|^(?:nvme\d+n\d+|mmcblk\d+)p\d+$`)
 
-// masterInfo returns the stable info payload consumed by OpenCtrl clients.
-//
-// The payload intentionally uses map[string]any to preserve the historical
-// response shape and field names. Non-Linux platforms still receive every field
-// with zero or sentinel values so UI code can avoid platform branching.
 func (m *Master) masterInfo() map[string]any {
 	m.mu.RLock()
 	alias := m.alias
@@ -46,8 +35,7 @@ func (m *Master) masterInfo() map[string]any {
 		"ver":        m.version,
 		"name":       m.hostname,
 		"uptime":     uint64(time.Since(m.startTime).Seconds()),
-		// The log field remains for client compatibility after removal of the
-		// master-side startup log parameter.
+
 		"log": "default",
 		"tls": m.tlsMode.String(),
 		"crt": m.crtPath,
@@ -71,14 +59,6 @@ func (m *Master) masterInfo() map[string]any {
 	return info
 }
 
-// linuxSysInfo collects lightweight Linux host metrics directly from /proc.
-//
-// Unsupported platforms return the same zero-value schema so API clients do
-// not need platform-specific response handling.
-//
-// The collector avoids third-party dependencies and treats missing or malformed
-// proc files as partial data instead of endpoint failure. That keeps /info
-// usable in containers and restricted environments.
 func linuxSysInfo() systemInfo {
 	info := systemInfo{
 		CPU:       -1,
@@ -117,8 +97,7 @@ func linuxSysInfo() systemInfo {
 		}
 		return
 	}
-	// CPU usage is sampled over a short interval. /proc/stat exposes cumulative
-	// jiffies, so two reads are required to compute an instantaneous percentage.
+
 	idle1, total1 := readStat()
 	time.Sleep(baseDuration)
 	idle2, total2 := readStat()
@@ -155,9 +134,7 @@ func linuxSysInfo() systemInfo {
 		for _, line := range strings.Split(string(data), "\n")[2:] {
 			if fields := strings.Fields(line); len(fields) >= 10 {
 				ifname := strings.TrimSuffix(fields[0], ":")
-				// Skip loopback, common container veth devices, and bridge
-				// interfaces so host traffic is not dominated by internal
-				// plumbing.
+
 				if strings.HasPrefix(ifname, "lo") || strings.HasPrefix(ifname, "veth") ||
 					strings.HasPrefix(ifname, "docker") || strings.HasPrefix(ifname, "podman") ||
 					strings.HasPrefix(ifname, "br-") || strings.HasPrefix(ifname, "virbr") {
@@ -177,9 +154,7 @@ func linuxSysInfo() systemInfo {
 		for line := range strings.SplitSeq(string(data), "\n") {
 			if fields := strings.Fields(line); len(fields) >= 14 {
 				deviceName := fields[2]
-				// Skip virtual, aggregate, and partition rows. Linux reports
-				// sectors for read/write counters, and the conventional sector
-				// size for these fields is 512 bytes.
+
 				if strings.HasPrefix(deviceName, "loop") || strings.HasPrefix(deviceName, "ram") ||
 					strings.HasPrefix(deviceName, "dm-") || strings.HasPrefix(deviceName, "md") ||
 					diskPartitionRegexp.MatchString(deviceName) {
