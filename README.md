@@ -1,16 +1,16 @@
 # OpenCtrl
 
-OpenCtrl is an advanced control-plane master for URL-defined runtime instances.
+OpenCtrl is a control-plane master for Nowhere Portal and Vector instances.
 
 It stores instance definitions, supervises child processes, exposes a versioned
 HTTP API, and streams lifecycle, log, and metric updates over Server-Sent
-Events. The master stays generic: orchestration belongs here; protocol behavior
-belongs to the runtime binary.
+Events. Runtime metrics, lifecycle state, and safe event logs come from
+Nowhere's local `nowhere.telemetry` interface.
 
 ## Design
 
 - URL-first instance configuration
-- Runtime-neutral process supervision
+- Nowhere Portal and Vector process supervision
 - Versioned REST API under `/api/v2`
 - Server-Sent Events for live state
 - Local durable state with backup
@@ -44,11 +44,10 @@ curl -H "X-API-Key: ${API_KEY}" "${BASE}/info"
 curl -H "X-API-Key: ${API_KEY}" "${BASE}/instances"
 ```
 
-To supervise non-`master` instance schemes, point the master at a compatible
-runtime binary:
+Point the master at the Nowhere binary:
 
 ```sh
-./bin/openctrl 'master://127.0.0.1:8080?bin=/opt/openctrl/runtime'
+./bin/openctrl 'master://127.0.0.1:8080?bin=/opt/nowhere/nowhere'
 ```
 
 Create an instance:
@@ -57,7 +56,7 @@ Create an instance:
 curl -X POST "${BASE}/instances" \
   -H "X-API-Key: ${API_KEY}" \
   -H "Content-Type: application/json" \
-  -d '{"alias":"edge-a","url":"managed://edge-a"}'
+  -d '{"alias":"edge-a","url":"portal://secret@*:2000"}'
 ```
 
 ## Master URL
@@ -115,28 +114,22 @@ data: {"type":"update","time":"2026-06-08T12:00:00Z","instance":{...},"logs":""}
 Event types are `initial`, `create`, `update`, `delete`, `log`, and
 `shutdown`.
 
-## Runtime Contract
+## Nowhere Runtime Contract
 
 OpenCtrl launches managed instances as:
 
 ```text
-<runtime-binary> <instance-url>
+<nowhere-binary> <portal-or-vector-url>
 ```
 
-Runtime binaries must accept the full instance URL as the first argument, stay
-in the foreground while active, reject invalid configuration before long-running
-work starts, handle termination promptly, and return a non-zero exit code for
-failures that should move the instance to `error`.
+Only `portal` and `vector` URLs are accepted. OpenCtrl discovers the child by
+its protected local telemetry registry, subscribes in `detail` mode, and maps
+snapshots and lifecycle messages to the REST model. Safe runtime and
+completed-access events become SSE `log` events. Child stdout and stderr are
+discarded and never affect instance state.
 
-Runtime binaries should write newline-delimited logs to stdout or stderr. They
-may emit checkpoints for metrics:
-
-```text
-CHECK_POINT|MODE=<n>|PING=<n>ms|POOL=<n>|TCPS=<n>|UDPS=<n>|TCPRX=<bytes>|TCPTX=<bytes>|UDPRX=<bytes>|UDPTX=<bytes>
-```
-
-Non-checkpoint output is forwarded to stdout and published as `log` events. A
-line containing `ERROR` marks the instance as `error`.
+The controller and Nowhere must run on the same host or in the same container,
+under the same operating-system user and temporary-directory namespace.
 
 ## State
 

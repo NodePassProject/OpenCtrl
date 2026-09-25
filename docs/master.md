@@ -403,9 +403,9 @@ return `cpu: -1` and zero-valued platform metrics.
 {
   "id": "d34db33f",
   "alias": "edge-a",
-  "type": "managed",
+  "type": "portal",
   "status": "running",
-  "url": "managed://edge-a",
+  "url": "portal://secret@127.0.0.1:2000",
   "config": "",
   "restart": true,
   "meta": {
@@ -420,7 +420,7 @@ return `cpu: -1` and zero-valued platform metrics.
   },
   "mode": 0,
   "ping": 12,
-  "pool": 4,
+  "pool": 0,
   "tcps": 10,
   "udps": 2,
   "tcprx": 123456,
@@ -438,12 +438,19 @@ return `cpu: -1` and zero-valued platform metrics.
 | `status` | `stopped`, `running`, or `error`. |
 | `url` | Normalized instance URL. |
 | `config` | Reserved runtime configuration field. The internal API-key instance stores the master ID here. |
-| `restart` | Whether the periodic task should restart the instance when it is in `error`. |
+| `restart` | Whether to auto-start the instance and restart it after a process failure or fatal lifecycle transition. |
 | `meta.peer` | Optional peer metadata with `sid`, `type`, and `alias`. |
 | `meta.tags` | Optional string map for operator metadata. |
-| `mode`, `ping`, `pool` | Runtime metrics parsed from checkpoints. |
-| `tcps`, `udps` | Active TCP and UDP counts parsed from checkpoints. |
-| `tcprx`, `tcptx`, `udprx`, `udptx` | Byte counters parsed from checkpoints. |
+| `mode`, `pool` | Reserved fields fixed at zero. |
+| `ping` | Latest active upstream transport latency from telemetry, in milliseconds. |
+| `tcps`, `udps` | Active TCP and UDP counts from telemetry snapshots. |
+| `tcprx`, `tcptx`, `udprx`, `udptx` | Logical payload counters from telemetry snapshots. |
+
+`ping` reflects Nowhere's transport sample, not an ICMP probe or the duration of
+an HTTP request. QUIC uses its connection RTT; TCP uses the kernel RTT on Linux
+and a 1 ms placeholder on other platforms. Zero means no active sample is
+available, or OpenCtrl has cleared stale live metrics. It is separate from the
+master's `/tcping` endpoint.
 
 Status meanings:
 
@@ -451,7 +458,7 @@ Status meanings:
 | --- | --- |
 | `stopped` | No child process is active. |
 | `running` | The child process has started and is being monitored. |
-| `error` | Start failed, the child exited with an error, a log line contained `ERROR`, or checkpoint reporting timed out after previously reporting. |
+| `error` | Start failed, the child exited with an error, telemetry reported a fatal lifecycle transition, or telemetry became stale. |
 
 ### List Instances
 
@@ -478,14 +485,14 @@ Client-side handling recommendations:
 curl -X POST "${BASE}/instances" \
   -H "X-API-Key: ${API_KEY}" \
   -H "Content-Type: application/json" \
-  -d '{"alias":"edge-a","url":"managed://edge-a"}'
+  -d '{"alias":"edge-a","url":"portal://secret@127.0.0.1:2000"}'
 ```
 
 Request body:
 
 | Field | Required | Description |
 | --- | --- | --- |
-| `url` | yes | Instance URL. It must have a scheme and must not use `master://`. |
+| `url` | yes | Nowhere instance URL with a `portal://` or `vector://` scheme. |
 | `alias` | no | Initial display name. |
 
 Creation rules:
@@ -550,7 +557,7 @@ Actions:
 | `start` | Starts the child if the instance is `stopped`. |
 | `stop` | Stops the child if it is active. |
 | `restart` | Stops the child, then starts it. |
-| `reset` | Resets byte counters while preserving counter bases for future checkpoints. |
+| `reset` | Resets byte counters while preserving counter bases for future telemetry snapshots. |
 
 Lifecycle actions run asynchronously except `reset`, which is applied before
 the response is returned. If a control button or automation triggers `start`,
@@ -588,10 +595,10 @@ the 256-character limit only on PATCH.
 curl -X PUT "${BASE}/instances/${ID}" \
   -H "X-API-Key: ${API_KEY}" \
   -H "Content-Type: application/json" \
-  -d '{"url":"managed://edge-b"}'
+  -d '{"url":"portal://secret@127.0.0.1:2001"}'
 ```
 
-The URL must have a non-`master` scheme. If the normalized URL is unchanged,
+The URL must use the `portal` or `vector` scheme. If the normalized URL is unchanged,
 OpenCtrl returns `409 Conflict`. Otherwise, the master stops the current child,
 stores the new URL and type, and starts the instance again.
 
@@ -703,11 +710,16 @@ Event types:
 | `create` | Sent after an instance is created. |
 | `update` | Sent when lifecycle state, metadata, counters, or API-key state changes. |
 | `delete` | Sent after an instance is removed. |
-| `log` | Sent for non-checkpoint child output. The `logs` field contains the line. |
+| `log` | Sent for safe telemetry runtime events, completed accesses, and delivery-gap notices. |
 | `shutdown` | Sent when the master is shutting down or when API key regeneration closes SSE clients. |
 
-Subscriber channels are bounded. If a subscriber or the global event dispatcher
-falls behind, events may be dropped instead of blocking the master.
+Each subscriber has a bounded log queue and a separate map of the latest state
+per instance. Metrics are sent every five seconds; status changes and user
+operations are sent immediately. Repeated pending state updates coalesce.
+Log overflow produces a loss notice as the client drains its queue, including
+when no further logs arrive. A client that exceeds the state capacity or cannot
+complete a write within five seconds is disconnected and must reconcile after
+reconnecting. Slow subscribers do not block telemetry reads.
 
 ### Header-Based SSE
 
@@ -816,15 +828,18 @@ Writes use a temporary file in the same directory and then rename it into
 place. Temporary `gob-*.tmp` files in the state directory are removed at load
 time.
 
-On startup, stored non-internal instances are reset to `stopped`. Instances with
-`restart: true` are auto-started. The internal `********` instance is loaded as
+On startup, stored non-internal instances are reset to `stopped` with zero live
+metrics. Portal and Vector instances with `restart: true` are auto-started.
+Records for unsupported schemes are retained without starting, with an
+operational log explaining why. The internal `********` instance is loaded as
 the source of API key, master ID, and master alias.
 
-The periodic task runs every 5 seconds. On each tick it:
+The periodic maintenance task runs every hour. On each tick it:
 
 - writes `openctrl.gob.backup`;
-- restarts non-internal instances whose status is `error` and whose `restart`
-  policy is `true`.
+- restarts instances with `restart: true` only when a process failure or fatal
+  Nowhere lifecycle transition made them eligible. Telemetry loss alone is not
+  restart eligible.
 
 During shutdown, OpenCtrl stops active child processes, saves state, emits SSE
 shutdown events, and shuts down the HTTP server with a 5-second context
@@ -838,9 +853,9 @@ The master writes operational logs with Go's standard `log` package:
 2026/06/09 12:00:00 Master.run: started: http://127.0.0.1:8080/api/v2
 ```
 
-Child process output is handled separately by the runtime process contract. It
-is forwarded to stdout with the instance ID appended and is also sent to SSE
-subscribers as `log` events.
+Nowhere child stdout and stderr are discarded. Safe runtime events, completed
+accesses, and gap notices received from local telemetry are sent to SSE
+subscribers as `log` events. OpenCtrl does not store a log history.
 
 ## Security Notes
 
@@ -855,42 +870,35 @@ control:
   tokens;
 - account for permissive CORS headers when exposing the API across origins.
 
-## Runtime Process Contract
+## Nowhere Process and Telemetry Contract
 
-The master supervises runtime binaries through a simple process contract. This
-contract applies when the master is started with `?bin=/path/to/runtime`, and
-it also applies when `bin` is omitted and the executable launches itself.
+The master supervises Nowhere Portal and Vector processes. Set
+`?bin=/path/to/nowhere` unless OpenCtrl and Nowhere are provided by the same
+executable.
 
 ### Launch
 
 ```text
-<bin-or-current-executable> <instance-url>
+<nowhere-binary> <portal-or-vector-url>
 ```
 
-The child process receives the full instance URL as its first positional
-argument. The child runs as the same operating-system user as the master. Its
-stdout and stderr are both captured by the master.
+The child receives the full URL as its first positional argument and runs as
+the same operating-system user. OpenCtrl discovers the protected
+`nowhere.telemetry` registry record belonging to the child PID, validates the
+registry, namespace, endpoint, process identity, and hello identity, then
+subscribes in `detail` mode. There is no TCP fallback or stdout parser.
 
-Runtime binaries should follow these practices:
-
-- accept the instance URL as the first positional argument;
-- reject invalid configuration before starting long-running work;
-- keep the managed process in the foreground;
-- avoid interactive prompts;
-- write newline-delimited logs to stdout or stderr;
-- redact secrets before printing URLs, headers, keys, or tokens;
-- handle termination signals and exit within the master's 5-second grace
-  period when possible;
-- return a non-zero exit code when startup or runtime failure should put the
-  instance in `error`;
-- emit checkpoints after the service is ready when metrics are available;
-- keep byte counters monotonic for the life of the process.
+OpenCtrl uses the fixed telemetry contract defined by Nowhere. The contract has
+no OpenCtrl-specific fields, messages, version negotiation, or replay. See the
+Nowhere telemetry contract for framing, discovery, privacy, and delivery semantics. The supported
+deployment places both processes on the same host or in the same container,
+with the same user, temporary directory, and process namespace.
 
 ### Stop
 
-On Unix-like systems, the master sends `SIGTERM`. On Windows, it sends an
-interrupt signal. It waits up to 5 seconds and then kills the process if it has
-not exited.
+On Unix-like systems, the master sends `SIGTERM`. On Windows, Go does not
+support sending the requested interrupt signal to the child. The master waits
+up to 5 seconds and then kills the process if it has not exited.
 
 After a stop, OpenCtrl clears the process handle and live metrics, then marks
 the instance `stopped`.
@@ -901,58 +909,32 @@ If the child exits cleanly while it was not being stopped, OpenCtrl resets the
 instance to `stopped`. If the child exits with an error, OpenCtrl marks the
 instance `error`.
 
-If the instance has `restart: true`, the periodic task will restart it while it
-remains in `error`.
+The hourly task restarts an instance with `restart: true` only while its
+process-failure or fatal-lifecycle reason still applies. Telemetry loss alone
+does not qualify it for restart.
 
-### Logs
+### Metrics, Logs, and Health
 
-Every non-checkpoint line from stdout or stderr is:
+Snapshots map logical TCP and UDP counters, active counts, and ping into the
+instance fields. `mode` and `pool` are always zero. Byte totals are cumulative
+across restarts and support the reset operation.
 
-- written to the master's stdout with the instance ID appended;
-- sent to SSE subscribers as a `log` event.
+Safe `runtime_event` messages and completed `access_finish` records become SSE
+`log` events. `access_start` is not logged separately. Telemetry `gap` messages
+and local SSE queue overflow produce visible loss notices. Child stdout and
+stderr are discarded, are not mirrored to OpenCtrl logs, and never change
+instance status.
 
-If a non-checkpoint line contains the substring `ERROR`, the instance is marked
-`error` and live counters are cleared. Use another word for recoverable
-warnings that should not change master state.
+Failures before telemetry connects are reported as launch, connection, or exit
+failures; raw child error text is unavailable. Diagnostic logs and certificate
+fingerprints follow Nowhere's own logging policy and are not forwarded.
 
-### Checkpoints
-
-Runtime metrics are reported by printing checkpoint lines:
-
-```text
-CHECK_POINT|MODE=<n>|PING=<n>ms|POOL=<n>|TCPS=<n>|UDPS=<n>|TCPRX=<bytes>|TCPTX=<bytes>|UDPRX=<bytes>|UDPTX=<bytes>
-```
-
-The parser expects this field order and base-10 numeric values. `PING` must use
-the `ms` suffix. The implementation uses a regular expression search, so the
-checkpoint can appear inside a larger line, but emitting it alone on a line is
-the stable format for runtime authors.
-
-Fields:
-
-| Field | Description |
-| --- | --- |
-| `MODE` | Runtime-defined mode value. |
-| `PING` | Runtime-defined latency in milliseconds. |
-| `POOL` | Runtime-defined pool or worker count. |
-| `TCPS` | Active TCP count. |
-| `UDPS` | Active UDP count. |
-| `TCPRX` | TCP bytes received by the runtime. |
-| `TCPTX` | TCP bytes transmitted by the runtime. |
-| `UDPRX` | UDP bytes received by the runtime. |
-| `UDPTX` | UDP bytes transmitted by the runtime. |
-
-When a checkpoint is parsed:
-
-- `mode`, `ping`, `pool`, `tcps`, and `udps` are updated directly;
-- byte counters are adjusted against reset/base offsets;
-- `lastCheckpoint` is refreshed;
-- an instance in `error` returns to `running`;
-- an `update` SSE event is emitted.
-
-If an instance has emitted at least one checkpoint and later goes more than
-15 seconds without another checkpoint while still running, OpenCtrl marks it
-`error`. Instances that never emit checkpoints are not timed out by this rule.
+The child is `running` after a successful process start. It becomes `error` if
+no nonzero snapshot arrives within 15 seconds, or if snapshots later stop for
+the greater of 15 seconds and three advertised telemetry intervals. IPC
+reconnect uses exponential backoff capped at 30 seconds. A fresh snapshot while
+the lifecycle is `READY` restores `running`; observation failure alone never
+qualifies the child for automatic restart.
 
 ## Client Patterns
 
@@ -1174,11 +1156,14 @@ export function redactOpenCtrlValue(value: string) {
 | TCP ping concurrency | 10 |
 | TCP ping dial timeout | 5 seconds |
 | Stop grace period | 5 seconds |
-| Periodic task interval | 5 seconds |
-| Checkpoint timeout | 15 seconds after the first checkpoint |
+| Instance health check interval | 5 seconds |
+| State backup and restart check interval | 1 hour |
+| Telemetry startup timeout | 15 seconds without a nonzero snapshot |
+| Telemetry freshness | Greater of 15 seconds or three advertised intervals |
 | SSE retry hint | 3000 milliseconds |
-| Global event channel buffer | 1024 |
-| Per-subscriber event channel buffer | 10 |
+| Per-subscriber pending instance states | 1024 |
+| Per-subscriber queued logs | 10 |
+| SSE write deadline | 5 seconds |
 | Certificate reload interval | 1 hour |
 
 ## Release Build
