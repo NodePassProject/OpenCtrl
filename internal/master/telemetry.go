@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	telemetryProtocol = "nowhere.telemetry"
+	telemetryProtocol = "nowhere.telemetry.3"
 	maxTelemetryFrame = 64 * 1024
 	maxRegistrySize   = 4096
 )
@@ -43,62 +43,23 @@ type telemetryEnvelope struct {
 }
 
 type telemetryHello struct {
-	Instance  telemetryDescriptor `json:"instance"`
-	Lifecycle string              `json:"lifecycle"`
-	Reason    string              `json:"lifecycle_reason"`
+	Instance telemetryDescriptor `json:"instance"`
 }
-
 type telemetryDescriptor struct {
-	Protocol            string `json:"telemetry_protocol"`
-	ID                  string `json:"id"`
-	Role                string `json:"role"`
-	PID                 uint32 `json:"pid"`
-	Version             string `json:"version"`
-	Endpoint            string `json:"endpoint"`
-	ConfigSummary       string `json:"config_summary"`
-	TelemetryIntervalMS uint64 `json:"telemetry_interval_ms"`
+	Protocol string `json:"telemetry_protocol"`
+	ID       string `json:"id"`
+	Role     string `json:"role"`
+	PID      uint32 `json:"pid"`
+	Version  string `json:"version"`
+	Endpoint string `json:"endpoint"`
 }
-
 type telemetrySnapshot struct {
-	Sequence       uint64 `json:"sequence"`
-	TimestampMS    uint64 `json:"timestamp_ms"`
-	TCPLogicalUp   uint64 `json:"tcp_logical_up"`
-	TCPLogicalDown uint64 `json:"tcp_logical_down"`
-	UDPLogicalUp   uint64 `json:"udp_logical_up"`
-	UDPLogicalDown uint64 `json:"udp_logical_down"`
-	TCPActive      int64  `json:"tcp_active"`
-	UDPActive      int64  `json:"udp_active"`
-	PingMS         uint64 `json:"ping_ms"`
-}
-
-type telemetryLifecycle struct {
-	State       string `json:"state"`
-	Reason      string `json:"reason"`
-	TimestampMS uint64 `json:"timestamp_ms"`
-}
-
-type telemetryRuntime struct {
-	TimestampMS uint64  `json:"timestamp_ms"`
-	Level       string  `json:"level"`
-	Kind        string  `json:"kind"`
-	Message     string  `json:"message"`
-	Client      *string `json:"client"`
-}
-
-type telemetryAccessFinish struct {
-	TimestampMS   uint64  `json:"timestamp_ms"`
-	DurationMS    uint64  `json:"duration_ms"`
-	Protocol      string  `json:"protocol"`
-	Client        *string `json:"client"`
-	Target        string  `json:"target"`
-	Outcome       string  `json:"outcome"`
-	UploadBytes   uint64  `json:"upload_bytes"`
-	DownloadBytes uint64  `json:"download_bytes"`
-	Error         *string `json:"error"`
-}
-
-type telemetryGap struct {
-	Missed uint64 `json:"missed"`
+	TCPUpload   uint64 `json:"tcp_upload_bytes"`
+	TCPDownload uint64 `json:"tcp_download_bytes"`
+	UDPUpload   uint64 `json:"udp_upload_bytes"`
+	UDPDownload uint64 `json:"udp_download_bytes"`
+	TCPActive   int64  `json:"tcp_active"`
+	UDPActive   int64  `json:"udp_active"`
 }
 
 func discoverTelemetry(pid uint32) ([]telemetryRegistry, error) {
@@ -188,19 +149,6 @@ func connectTelemetry(ctx context.Context, entry telemetryRegistry) (net.Conn, t
 	if hello.Instance.Protocol != telemetryProtocol || hello.Instance.ID != id || hello.Instance.PID != entry.Instance.PID {
 		return closeWithError(fmt.Errorf("telemetry hello identity mismatch"))
 	}
-	if hello.Instance.TelemetryIntervalMS < 250 || hello.Instance.TelemetryIntervalMS > 60_000 {
-		return closeWithError(fmt.Errorf("telemetry interval is outside the contract"))
-	}
-	command := map[string]any{"type": "subscribe", "data": map[string]any{"request_id": uint64(1), "subscription": "detail"}}
-	if err := conn.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		return closeWithError(err)
-	}
-	if err := writeTelemetryFrame(conn, command); err != nil {
-		return closeWithError(err)
-	}
-	if err := conn.SetDeadline(time.Time{}); err != nil {
-		return closeWithError(err)
-	}
 	return conn, hello, nil
 }
 
@@ -236,28 +184,4 @@ func readTelemetryFrame(reader io.Reader) (telemetryEnvelope, error) {
 		return message, fmt.Errorf("invalid telemetry envelope")
 	}
 	return message, nil
-}
-
-func writeTelemetryFrame(writer io.Writer, value any) error {
-	payload, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	if len(payload) == 0 || len(payload) > 1024 {
-		return fmt.Errorf("invalid telemetry command length %d", len(payload))
-	}
-	var length [4]byte
-	binary.BigEndian.PutUint32(length[:], uint32(len(payload)))
-	frame := append(length[:], payload...)
-	for len(frame) > 0 {
-		n, err := writer.Write(frame)
-		if err != nil {
-			return err
-		}
-		if n <= 0 || n > len(frame) {
-			return io.ErrShortWrite
-		}
-		frame = frame[n:]
-	}
-	return nil
 }

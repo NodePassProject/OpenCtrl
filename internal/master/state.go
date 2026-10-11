@@ -122,10 +122,10 @@ func (m *Master) loadState() {
 
 		m.instances.Store(id, instance)
 
-		if instance.Type != "portal" && instance.Type != "vector" {
+		if !supportedRole(instance.Type) {
 			log.Printf("Master.loadState: unsupported non-Nowhere instance retained without starting [%v]", instance.ID)
 		} else if instance.Restart {
-			log.Printf("Master.loadState: auto-starting instance: %v [%v]", instance.URL, instance.ID)
+			log.Printf("Master.loadState: auto-starting instance [%v]", instance.ID)
 			m.startInstance(instance)
 
 			time.Sleep(baseDuration)

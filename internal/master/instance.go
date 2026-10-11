@@ -78,7 +78,7 @@ func (m *Master) startInstanceLocked(inst *instance) {
 		return
 	}
 	parsedURL, urlErr := url.Parse(inst.URL)
-	if urlErr != nil || (parsedURL.Scheme != "portal" && parsedURL.Scheme != "vector") || parsedURL.Scheme != inst.Type {
+	if urlErr != nil || !supportedRole(parsedURL.Scheme) || parsedURL.Scheme != inst.Type {
 		log.Printf("Master.startInstanceLocked: unsupported Nowhere instance [%v]", inst.ID)
 		inst.Status = "error"
 		inst.runtimeFailure = false
@@ -92,12 +92,8 @@ func (m *Master) startInstanceLocked(inst *instance) {
 	inst.udpRXBase = inst.UDPRX
 	inst.udpTXBase = inst.UDPTX
 	inst.tcpRXReset, inst.tcpTXReset, inst.udpRXReset, inst.udpTXReset = 0, 0, 0, 0
-	inst.lastSequence = 0
 	inst.telemetryIdentity = ""
 	inst.Ping, inst.Pool, inst.TCPS, inst.UDPS = 0, 0, 0, 0
-	inst.lastTelemetry = time.Time{}
-	inst.telemetryInterval = 0
-	inst.telemetryReady = false
 	inst.runtimeFailure = false
 	inst.Mode = 0
 
@@ -126,10 +122,13 @@ func (m *Master) startInstanceLocked(inst *instance) {
 	}
 	cmd := cmdFactory(ctx, execPath, inst.URL)
 	inst.cancelFunc = cancel
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	stdout := &processLog{master: m, instance: inst, cmd: cmd}
+	stderr := &processLog{master: m, instance: inst, cmd: cmd}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	cmd.WaitDelay = 2 * time.Second
+	inst.cmd = cmd
 
-	log.Printf("Master.startInstanceLocked: instance starting: %v [%v]", inst.URL, inst.ID)
+	log.Printf("Master.startInstanceLocked: instance starting [%v]", inst.ID)
 
 	if err := cmd.Start(); err != nil || cmd.Process == nil || cmd.Process.Pid <= 0 {
 		if err != nil {
@@ -152,7 +151,6 @@ func (m *Master) startInstanceLocked(inst *instance) {
 	inst.stopped = make(chan struct{})
 	inst.exited = make(chan struct{})
 	inst.Status = "running"
-	startedAt := time.Now()
 	stoppedCh := inst.stopped
 	exitedCh := inst.exited
 
@@ -160,106 +158,47 @@ func (m *Master) startInstanceLocked(inst *instance) {
 	inst.mu.Unlock()
 
 	go m.runTelemetry(ctx, inst, cmd)
-	go m.monitorInstance(inst, cmd, stoppedCh, exitedCh, startedAt)
+	go m.monitorInstance(inst, cmd, stoppedCh, exitedCh, stdout, stderr)
 
 	m.sendSSEEvent("update", inst)
 }
 
-func (m *Master) monitorInstance(inst *instance, cmd *exec.Cmd, stoppedCh <-chan struct{}, exitedCh chan struct{}, startedAt time.Time) {
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	stopped := false
-	ticker := time.NewTicker(reportInterval)
-	defer ticker.Stop()
+func (m *Master) monitorInstance(inst *instance, cmd *exec.Cmd, stoppedCh <-chan struct{}, exitedCh chan struct{}, stdout, stderr *processLog) {
 	defer close(exitedCh)
-
-	for {
-		select {
-		case <-stoppedCh:
-
-			stopped = true
-			stoppedCh = nil
-		case err := <-done:
-			if !stopped && stoppedCh != nil {
-				select {
-				case <-stoppedCh:
-					stopped = true
-				default:
-				}
-			}
-			if value, exists := m.instances.Load(inst.ID); exists {
-				inst = value.(*instance)
-				sendUpdate := false
-				var cancel context.CancelFunc
-				inst.mu.Lock()
-				if inst.cmd == cmd && !stopped {
-					cancel = inst.cancelFunc
-					if err != nil {
-						log.Printf("Master.monitorInstance: instance error: %v [%v]", err, inst.ID)
-						inst.Status = "error"
-						inst.cmd = nil
-						inst.stopped = make(chan struct{})
-						inst.exited = nil
-						inst.cancelFunc = nil
-						inst.lastTelemetry = time.Time{}
-						inst.runtimeFailure = true
-						inst.Ping = 0
-						inst.Pool = 0
-						inst.TCPS = 0
-						inst.UDPS = 0
-					} else {
-						resetStoppedInstanceLocked(inst)
-					}
-					m.instances.Store(inst.ID, inst)
-					sendUpdate = true
-				}
-				inst.mu.Unlock()
-				if cancel != nil {
-					cancel()
-				}
-				if sendUpdate {
-					m.sendSSEEvent("update", inst)
-				}
-			}
-			return
-		case <-ticker.C:
-			if !stopped && stoppedCh != nil {
-				select {
-				case <-stoppedCh:
-					stopped = true
-					stoppedCh = nil
-				default:
-				}
-			}
-			sendUpdate := false
-			inst.mu.Lock()
-			if inst.cmd == cmd && !stopped {
-				freshness := 15 * time.Second
-				if interval := 3 * inst.telemetryInterval; interval > freshness {
-					freshness = interval
-				}
-				startupExpired := time.Since(startedAt) > 15*time.Second
-				stale := startupExpired && !inst.telemetryReady ||
-					inst.lastTelemetry.IsZero() && startupExpired ||
-					!inst.lastTelemetry.IsZero() && time.Since(inst.lastTelemetry) > freshness
-				if stale {
-					inst.Status = "error"
-					inst.Ping, inst.Pool, inst.TCPS, inst.UDPS = 0, 0, 0, 0
-					m.instances.Store(inst.ID, inst)
-					sendUpdate = true
-				} else if !stale && inst.telemetryReady && inst.Status == "error" && !inst.runtimeFailure {
-					inst.Status = "running"
-					m.instances.Store(inst.ID, inst)
-					sendUpdate = true
-				} else if !inst.lastTelemetry.IsZero() {
-					sendUpdate = true
-				}
-			}
-			inst.mu.Unlock()
-			if sendUpdate {
-				m.sendSSEEvent("update", inst)
-			}
+	err := cmd.Wait()
+	stdout.flush()
+	stderr.flush()
+	inst.mu.Lock()
+	stopped := false
+	select {
+	case <-stoppedCh:
+		stopped = true
+	default:
+	}
+	current := inst.cmd == cmd && !inst.deleted
+	var cancel context.CancelFunc
+	if current && !stopped {
+		cancel = inst.cancelFunc
+		if err != nil {
+			inst.Status = "error"
+			inst.cmd = nil
+			inst.exited = nil
+			inst.cancelFunc = nil
+			inst.runtimeFailure = true
+			inst.Ping, inst.Pool, inst.TCPS, inst.UDPS = 0, 0, 0, 0
+		} else {
+			resetStoppedInstanceLocked(inst)
 		}
+	}
+	inst.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if current && !stopped {
+		if err := m.saveState(); err != nil {
+			log.Printf("save exited instance failed: %v", err)
+		}
+		m.sendSSEEvent("update", inst)
 	}
 }
 
@@ -331,7 +270,10 @@ func (m *Master) stopInstanceLocked(instance *instance) {
 				cancelFunc = nil
 			}
 			process.Kill()
-			<-exitedCh
+			select {
+			case <-exitedCh:
+			case <-time.After(3 * time.Second):
+			}
 			log.Printf("Master.stopInstanceLocked: instance force killed [%v]", instance.ID)
 		}
 	} else {
@@ -366,8 +308,10 @@ func (m *Master) normalizeInstanceURL(rawURL string) (string, string, error) {
 	if err != nil {
 		return "", "", fmt.Errorf("Master.normalizeInstanceURL: invalid URL format: %w", err)
 	}
-	if parsedURL.Scheme != "portal" && parsedURL.Scheme != "vector" {
-		return "", "", fmt.Errorf("Master.normalizeInstanceURL: scheme must be portal or vector")
+	if !supportedRole(parsedURL.Scheme) {
+		return "", "", fmt.Errorf("Master.normalizeInstanceURL: scheme must be portal, vector or egress")
 	}
 	return parsedURL.Scheme, parsedURL.String(), nil
 }
+
+func supportedRole(role string) bool { return role == "portal" || role == "vector" || role == "egress" }

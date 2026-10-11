@@ -307,7 +307,7 @@ func (m *Master) handlePutInstance(w http.ResponseWriter, r *http.Request, id st
 	m.saveStateAsync()
 	writeJSON(w, http.StatusOK, inst.snapshot())
 
-	log.Printf("Master.handlePutInstance: instance URL updated: %v [%v]", enhancedURL, inst.ID)
+	log.Printf("Master.handlePutInstance: instance URL updated [%v]", inst.ID)
 }
 
 func (m *Master) handleDeleteInstance(w http.ResponseWriter, id string, inst *instance) {

@@ -111,13 +111,10 @@ func (s *sseSubscriber) enqueue(event *instanceEvent) {
 	}
 	if event.Type == "log" {
 		if len(s.logs) == 10 {
-			if s.droppedLogs == 0 {
-				s.gapInstance = event.Instance
-			}
-			s.droppedLogs++
-		} else {
-			s.logs = append(s.logs, event)
+			s.close()
+			return
 		}
+		s.logs = append(s.logs, event)
 	} else {
 		key := ""
 		if event.Instance != nil {
@@ -147,17 +144,6 @@ func (s *sseSubscriber) next() *instanceEvent {
 		delete(s.states, "")
 		return event
 	}
-	if s.droppedLogs != 0 && !s.gapSent {
-		s.gapSent = true
-		missed := s.droppedLogs
-		s.droppedLogs = 0
-		inst := s.gapInstance
-		s.gapInstance = nil
-		return &instanceEvent{
-			Type: "log", Time: time.Now(), Instance: inst,
-			Logs: fmt.Sprintf("OpenCtrl dropped %d log event(s) across this slow SSE connection", missed),
-		}
-	}
 	var selected *instanceEvent
 	var key string
 	for id, event := range s.states {
@@ -166,18 +152,15 @@ func (s *sseSubscriber) next() *instanceEvent {
 		}
 	}
 	if len(s.logs) > 0 && (selected == nil || s.logs[0].Time.Before(selected.Time)) {
-		s.gapSent = false
 		event := s.logs[0]
 		s.logs[0] = nil
 		s.logs = s.logs[1:]
 		return event
 	}
 	if selected != nil {
-		s.gapSent = false
 		delete(s.states, key)
 		return selected
 	}
-	s.gapSent = false
 	return nil
 }
 

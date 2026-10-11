@@ -36,7 +36,6 @@ func (m *Master) masterInfo() map[string]any {
 		"name":       m.hostname,
 		"uptime":     uint64(time.Since(m.startTime).Seconds()),
 
-		"log": "default",
 		"tls": m.tlsMode.String(),
 		"crt": m.crtPath,
 		"key": m.keyPath,

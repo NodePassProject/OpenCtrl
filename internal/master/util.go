@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"maps"
 	"net/http"
-	"time"
 )
 
 func setCORSHeaders(w http.ResponseWriter) {
@@ -63,9 +62,6 @@ func resetStoppedInstanceLocked(instance *instance) {
 	instance.stopped = make(chan struct{})
 	instance.exited = nil
 	instance.cancelFunc = nil
-	instance.lastTelemetry = time.Time{}
-	instance.telemetryInterval = 0
-	instance.telemetryReady = false
 	instance.runtimeFailure = false
 	instance.Ping = 0
 	instance.Pool = 0

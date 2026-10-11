@@ -78,11 +78,7 @@ type instance struct {
 	exited            chan struct{}
 	deleted           bool
 	cancelFunc        context.CancelFunc
-	lastTelemetry     time.Time
-	lastSequence      uint64
 	telemetryIdentity string
-	telemetryInterval time.Duration
-	telemetryReady    bool
 	runtimeFailure    bool
 }
 
@@ -105,15 +101,12 @@ type instanceEvent struct {
 }
 
 type sseSubscriber struct {
-	mu          sync.Mutex
-	wake        chan struct{}
-	states      map[string]*instanceEvent
-	logs        []*instanceEvent
-	done        chan struct{}
-	once        sync.Once
-	droppedLogs uint64
-	gapInstance *instance
-	gapSent     bool
+	mu     sync.Mutex
+	wake   chan struct{}
+	states map[string]*instanceEvent
+	logs   []*instanceEvent
+	done   chan struct{}
+	once   sync.Once
 }
 
 type systemInfo struct {
