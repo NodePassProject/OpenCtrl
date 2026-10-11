@@ -186,7 +186,7 @@ func (m *Master) Run() {
 	<-ctx.Done()
 	stop()
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), gracefulTimeout)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*gracefulTimeout+3*time.Second)
 	defer cancel()
 	if err := m.shutdown(shutdownCtx); err != nil {
 		log.Printf("Master.run: shutdown failed: %v", err)
@@ -201,7 +201,6 @@ func (m *Master) shutdown(ctx context.Context) error {
 		defer close(done)
 
 		close(m.periodicDone)
-		m.shutdownSSEConnections()
 
 		var wg sync.WaitGroup
 		m.instances.Range(func(key, value any) bool {
@@ -226,7 +225,10 @@ func (m *Master) shutdown(ctx context.Context) error {
 			log.Printf("Master.shutdown: state saved: %v", m.statePath)
 		}
 
-		if err := m.server.Shutdown(ctx); err != nil {
+		m.shutdownSSEConnections()
+		apiCtx, cancel := context.WithTimeout(ctx, gracefulTimeout)
+		defer cancel()
+		if err := m.server.Shutdown(apiCtx); err != nil {
 			log.Printf("Master.shutdown: api shutdown failed: %v", err)
 		}
 	}()

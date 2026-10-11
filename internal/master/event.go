@@ -140,10 +140,6 @@ func (s *sseSubscriber) next() *instanceEvent {
 		return nil
 	default:
 	}
-	if event := s.states[""]; event != nil && event.Type == "shutdown" {
-		delete(s.states, "")
-		return event
-	}
 	var selected *instanceEvent
 	var key string
 	for id, event := range s.states {

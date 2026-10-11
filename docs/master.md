@@ -834,8 +834,9 @@ The periodic maintenance task runs every hour. On each tick it:
   restart eligible.
 
 During shutdown, OpenCtrl stops active child processes, saves state, emits SSE
-shutdown events, and shuts down the HTTP server with a 5-second context
-deadline.
+shutdown events after queued child logs and final states, and shuts down the
+HTTP server with a 5-second deadline. The overall 13-second shutdown budget
+allows the child stop grace period, forced cleanup and HTTP shutdown to finish.
 
 ## Logging
 
@@ -850,7 +851,8 @@ SSE `log` text. UTC timestamps come from Nowhere; OpenCtrl adds no level, stream
 label or second timestamp. It retains no history. Each stream is ordered; stdout
 and stderr do not have a shared ordering guarantee. Long lines use bounded 16 KiB
 fragments. Readers finish before the child's final state event, with a two-second
-copy-completion limit. A full SSE log queue disconnects that consumer.
+copy-completion limit. A pipe cleanup timeout does not turn a successful child
+exit into an error. A full SSE log queue disconnects that consumer.
 
 ## Security Notes
 
@@ -907,7 +909,9 @@ IPC loss does not qualify the process for restart.
 Snapshots map the four TCP/UDP cumulative payload counters and two active Flow
 counts to instance fields. `mode`, `ping` and `pool` stay zero. OpenCtrl retains
 byte totals across restarts and supports explicit reset. Reconnection replaces
-current process values and does not add them twice.
+current process values and does not add them twice. A Snapshot must contain all
+six non-null integer fields; malformed snapshots disconnect IPC without applying
+invalid data.
 
 stdout contains startup, TLS fingerprint and graceful shutdown information;
 stderr contains original diagnostic error chains. OpenCtrl forwards both streams

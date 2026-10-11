@@ -24,6 +24,19 @@ func TestChildOutputHelper(t *testing.T) {
 	if os.Getenv("OPENCTRL_TEST_CHILD") != "1" {
 		return
 	}
+	if mode := os.Getenv("OPENCTRL_TEST_INHERITED_OUTPUT"); mode != "" {
+		if mode == "child" {
+			time.Sleep(250 * time.Millisecond)
+			os.Exit(0)
+		}
+		child := exec.Command(os.Args[0], "-test.run=^TestChildOutputHelper$")
+		child.Env = append(os.Environ(), "OPENCTRL_TEST_INHERITED_OUTPUT=child")
+		child.Stdout, child.Stderr = os.Stdout, os.Stderr
+		if child.Start() != nil {
+			os.Exit(2)
+		}
+		os.Exit(0)
+	}
 	fmt.Println("2026-10-11T00:00:00.000Z starting")
 	fmt.Fprintln(os.Stderr, "2026-10-11T00:00:00.001Z refused: raw inner error")
 	fmt.Println(strings.Repeat("x", 70000))
@@ -230,5 +243,79 @@ func TestLongUnicodeOutputPreservesTextAcrossFragments(t *testing.T) {
 	}
 	if actual.String() != text {
 		t.Fatal("UTF-8 text changed at fragment boundary")
+	}
+}
+
+func TestShutdownFollowsQueuedLogsAndFinalState(t *testing.T) {
+	subscriber := testSubscriber()
+	base := time.Now()
+	subscriber.enqueue(&instanceEvent{Type: "log", Time: base, Logs: "shutdown complete"})
+	subscriber.enqueue(&instanceEvent{Type: "update", Time: base.Add(time.Millisecond), Instance: &instance{ID: "x", Status: "stopped"}})
+	subscriber.enqueue(&instanceEvent{Type: "shutdown", Time: base.Add(2 * time.Millisecond)})
+	for _, want := range []string{"log", "update", "shutdown"} {
+		if event := subscriber.next(); event == nil || event.Type != want {
+			t.Fatalf("want %s before stream closes, got %#v", want, event)
+		}
+	}
+}
+
+func TestInvalidSnapshotsPreserveLastStatistics(t *testing.T) {
+	valid := string(mustJSON(t, telemetrySnapshot{TCPUpload: 42, TCPActive: 1}))
+	for _, payload := range []string{"null", "{}", strings.Replace(valid, `"tcp_active":1`, `"tcp_active":null`, 1), strings.Replace(valid, `"tcp_active":1`, `"unknown":1`, 1), strings.Replace(valid, `"tcp_active":1`, `"tcp_active":-1`, 1)} {
+		t.Run(payload, func(t *testing.T) {
+			left, right := net.Pipe()
+			defer left.Close()
+			defer right.Close()
+			m := &Master{}
+			cmd := &exec.Cmd{}
+			inst := &instance{ID: "x", Status: "running", cmd: cmd, stopped: make(chan struct{}), TCPRX: 100, TCPS: 3}
+			frame := mustJSON(t, telemetryEnvelope{Type: "snapshot", Data: json.RawMessage(payload)})
+			go func() {
+				defer right.Close()
+				_ = binary.Write(right, binary.BigEndian, uint32(len(frame)))
+				_, _ = right.Write(frame)
+			}()
+			if err := m.consumeTelemetry(context.Background(), inst, cmd, left); err == nil {
+				t.Fatal("invalid snapshot accepted")
+			}
+			if inst.TCPRX != 100 || inst.TCPS != 3 || inst.Status != "running" {
+				t.Fatal("invalid snapshot replaced valid statistics")
+			}
+		})
+	}
+}
+
+func TestInheritedOutputTimeoutDoesNotChangeSuccessfulExit(t *testing.T) {
+	m := &Master{statePath: filepath.Join(t.TempDir(), "state.gob")}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestChildOutputHelper$")
+	cmd.Env = append(os.Environ(), "OPENCTRL_TEST_CHILD=1", "OPENCTRL_TEST_INHERITED_OUTPUT=parent")
+	inst := &instance{ID: "x", Status: "running", cmd: cmd, stopped: make(chan struct{})}
+	m.instances.Store(inst.ID, inst)
+	stdout := &processLog{master: m, instance: inst, cmd: cmd}
+	stderr := &processLog{master: m, instance: inst, cmd: cmd}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	cmd.WaitDelay = 30 * time.Millisecond
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	m.monitorInstance(inst, cmd, inst.stopped, make(chan struct{}), stdout, stderr)
+	if inst.Status != "stopped" || inst.runtimeFailure {
+		t.Fatal("successful exit misclassified after inherited pipe timeout")
+	}
+}
+
+func TestShutdownPreventsLateProcessStarts(t *testing.T) {
+	m := &Master{periodicDone: make(chan struct{})}
+	close(m.periodicDone)
+	started := false
+	m.instanceCmd = func(context.Context, string, string) *exec.Cmd {
+		started = true
+		return exec.Command("missing-test-executable")
+	}
+	inst := &instance{ID: "late", Type: "vector", URL: "vector://0123456789abcdef0123456789abcdef@localhost:2000", Status: "stopped"}
+	m.instances.Store(inst.ID, inst)
+	m.startInstance(inst)
+	if started || inst.Status != "stopped" {
+		t.Fatal("process start escaped master shutdown")
 	}
 }

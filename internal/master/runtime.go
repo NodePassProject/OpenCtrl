@@ -1,6 +1,7 @@
 package master
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -86,8 +87,19 @@ func (m *Master) consumeTelemetry(ctx context.Context, inst *instance, cmd *exec
 		if message.Type != "snapshot" {
 			return fmt.Errorf("expected telemetry snapshot")
 		}
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(message.Data, &fields) != nil || len(fields) != 6 {
+			return fmt.Errorf("incomplete telemetry snapshot")
+		}
+		for _, field := range fields {
+			if bytes.Equal(bytes.TrimSpace(field), []byte("null")) {
+				return fmt.Errorf("null telemetry statistic")
+			}
+		}
+		decoder := json.NewDecoder(bytes.NewReader(message.Data))
+		decoder.DisallowUnknownFields()
 		var value telemetrySnapshot
-		if json.Unmarshal(message.Data, &value) != nil || value.TCPActive < 0 || value.UDPActive < 0 {
+		if decoder.Decode(&value) != nil || value.TCPActive < 0 || value.UDPActive < 0 {
 			return fmt.Errorf("invalid telemetry snapshot")
 		}
 		m.applyTelemetrySnapshot(inst, cmd, value)

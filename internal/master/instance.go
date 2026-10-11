@@ -73,6 +73,12 @@ func (m *Master) startInstance(inst *instance) {
 
 func (m *Master) startInstanceLocked(inst *instance) {
 	inst.mu.Lock()
+	select {
+	case <-m.periodicDone:
+		inst.mu.Unlock()
+		return
+	default:
+	}
 	if inst.deleted || inst.Status != "stopped" {
 		inst.mu.Unlock()
 		return
@@ -165,7 +171,7 @@ func (m *Master) startInstanceLocked(inst *instance) {
 
 func (m *Master) monitorInstance(inst *instance, cmd *exec.Cmd, stoppedCh <-chan struct{}, exitedCh chan struct{}, stdout, stderr *processLog) {
 	defer close(exitedCh)
-	err := cmd.Wait()
+	_ = cmd.Wait()
 	stdout.flush()
 	stderr.flush()
 	inst.mu.Lock()
@@ -179,7 +185,7 @@ func (m *Master) monitorInstance(inst *instance, cmd *exec.Cmd, stoppedCh <-chan
 	var cancel context.CancelFunc
 	if current && !stopped {
 		cancel = inst.cancelFunc
-		if err != nil {
+		if cmd.ProcessState == nil || !cmd.ProcessState.Success() {
 			inst.Status = "error"
 			inst.cmd = nil
 			inst.exited = nil

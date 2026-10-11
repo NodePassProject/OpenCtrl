@@ -192,6 +192,14 @@ def main():
                 action(identity, "stop")
                 wait_for(lambda: get(identity)["status"] == "stopped")
                 wait_for(lambda: any("shutdown complete" in text for text in logs(identity)))
+            action(vector, "start")
+            wait_for(lambda: len([text for text in logs(vector) if "starting:" in text]) == 3)
+            master.send_signal(signal.SIGTERM)
+            master.wait(TIMEOUT)
+            observer.join(TIMEOUT)
+            assert not observer.is_alive()
+            assert len([text for text in logs(vector) if "shutdown complete" in text]) == 3
+            assert events[-1]["type"] == "shutdown"
             for identity in instances:
                 for text in logs(identity):
                     assert KEY not in text and "invalid@" not in text
@@ -202,9 +210,11 @@ def main():
             print(json.dumps({"result": "passed", "roles": ["portal", "egress", "vector"],
                 "known_bytes_per_transfer": len(payload), "pipe_logs_over_sse": True,
                 "active_flows": True, "cumulative_restart_and_reset": True,
-                "egress_retry_keeps_running": True, "startup_failure_log": True}))
+                "egress_retry_keeps_running": True, "startup_failure_log": True,
+                "master_shutdown_drains_child_logs": True}))
         finally:
-            master.send_signal(signal.SIGTERM)
+            if master.poll() is None:
+                master.send_signal(signal.SIGTERM)
             try:
                 master.wait(TIMEOUT)
             except subprocess.TimeoutExpired:
