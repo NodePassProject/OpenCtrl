@@ -13,7 +13,7 @@ import (
 )
 
 func telemetryDirectory() (string, error) {
-	return filepath.Join(os.TempDir(), fmt.Sprintf("nowhere-telemetry-nw3-%d", os.Geteuid())), nil
+	return filepath.Join(os.TempDir(), fmt.Sprintf("nowhere-telemetry-3-%d", os.Geteuid())), nil
 }
 
 func telemetryTransport() string { return "unix_socket" }

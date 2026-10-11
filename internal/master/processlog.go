@@ -1,5 +1,3 @@
-// Child output forwarding with bounded line fragments and exit-time flushing.
-
 package master
 
 import (

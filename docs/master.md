@@ -1164,15 +1164,3 @@ Tags matching `v*.*.*` trigger release builds for:
 - Windows `amd64` and `arm64`.
 
 The release workflow sets `main.version` to the tag name.
-
-## NW3 Integration Check
-
-Build both binaries, then run:
-
-```sh
-python3 scripts/check-nw3.py /path/to/openctrl /path/to/nowhere
-```
-
-The check uses isolated state and real Portal, Vector and Egress processes. It
-verifies pipe logs over SSE, six IPC statistics, active Flow cleanup, cumulative
-bytes across restart, explicit reset, startup errors and Egress retry status.

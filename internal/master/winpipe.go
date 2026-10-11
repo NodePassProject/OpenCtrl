@@ -127,14 +127,14 @@ func telemetryDirectory() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(os.TempDir(), "nowhere-telemetry-nw3-"+key), nil
+	return filepath.Join(os.TempDir(), "nowhere-telemetry-3-"+key), nil
 }
 
 func telemetryTransport() string { return "named_pipe" }
 
 func telemetryEndpoint(id string) string {
 	key, _ := telemetryUserKey()
-	return `\\.\pipe\nowhere-telemetry-nw3-` + key + "-" + id
+	return `\\.\pipe\nowhere-telemetry-3-` + key + "-" + id
 }
 
 func telemetryNamespace() (string, error) { return telemetryUserKey() }
@@ -190,7 +190,7 @@ func (c *pipeConn) LocalAddr() net.Addr  { return pipeAddr("local") }
 func (c *pipeConn) RemoteAddr() net.Addr { return pipeAddr(c.endpoint) }
 
 func dialTelemetry(ctx context.Context, endpoint string, pid uint32) (net.Conn, error) {
-	prefix := `\\.\pipe\nowhere-telemetry-nw3-`
+	prefix := `\\.\pipe\nowhere-telemetry-3-`
 	key, err := telemetryUserKey()
 	if err != nil || !strings.HasPrefix(endpoint, prefix+key+"-") {
 		return nil, fmt.Errorf("invalid telemetry endpoint")
