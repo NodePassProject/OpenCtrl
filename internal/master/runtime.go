@@ -91,7 +91,14 @@ func (m *Master) consumeTelemetry(ctx context.Context, inst *instance, cmd *exec
 		if json.Unmarshal(message.Data, &fields) != nil || len(fields) != 6 {
 			return fmt.Errorf("incomplete telemetry snapshot")
 		}
-		for _, field := range fields {
+		for _, name := range [...]string{
+			"tcp_upload_bytes", "tcp_download_bytes", "udp_upload_bytes", "udp_download_bytes",
+			"tcp_active", "udp_active",
+		} {
+			field, present := fields[name]
+			if !present {
+				return fmt.Errorf("incomplete telemetry snapshot")
+			}
 			if bytes.Equal(bytes.TrimSpace(field), []byte("null")) {
 				return fmt.Errorf("null telemetry statistic")
 			}
