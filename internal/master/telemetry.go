@@ -46,7 +46,7 @@ type telemetryHello struct {
 	Instance telemetryDescriptor `json:"instance"`
 }
 type telemetryDescriptor struct {
-	Protocol string `json:"telemetry_protocol"`
+	Contract string `json:"contract"`
 	ID       string `json:"id"`
 	Role     string `json:"role"`
 	PID      uint32 `json:"pid"`
@@ -146,7 +146,7 @@ func connectTelemetry(ctx context.Context, entry telemetryRegistry) (net.Conn, t
 		return closeWithError(err)
 	}
 	id := strings.TrimPrefix(entry.Instance.RegistryName, "nowhere.")
-	if hello.Instance.Protocol != telemetryProtocol || hello.Instance.ID != id || hello.Instance.PID != entry.Instance.PID {
+	if hello.Instance.Contract != telemetryProtocol || hello.Instance.ID != id || hello.Instance.PID != entry.Instance.PID {
 		return closeWithError(fmt.Errorf("telemetry hello identity mismatch"))
 	}
 	return conn, hello, nil
