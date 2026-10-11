@@ -419,7 +419,7 @@ return `cpu: -1` and zero-valued platform metrics.
     }
   },
   "mode": 0,
-  "ping": 12,
+  "ping": 0,
   "pool": 0,
   "tcps": 10,
   "udps": 2,
@@ -438,19 +438,12 @@ return `cpu: -1` and zero-valued platform metrics.
 | `status` | `stopped`, `running`, or `error`. |
 | `url` | Normalized instance URL. |
 | `config` | Reserved runtime configuration field. The internal API-key instance stores the master ID here. |
-| `restart` | Whether to auto-start the instance and restart it after a process failure or fatal lifecycle transition. |
+| `restart` | Whether to auto-start the instance and restart it after a process failure. |
 | `meta.peer` | Optional peer metadata with `sid`, `type`, and `alias`. |
 | `meta.tags` | Optional string map for operator metadata. |
-| `mode`, `pool` | Reserved fields fixed at zero. |
-| `ping` | Latest active upstream transport latency from telemetry, in milliseconds. |
+| `mode`, `ping`, `pool` | Reserved fields fixed at zero. |
 | `tcps`, `udps` | Active TCP and UDP counts from telemetry snapshots. |
 | `tcprx`, `tcptx`, `udprx`, `udptx` | Logical payload counters from telemetry snapshots. |
-
-`ping` reflects Nowhere's transport sample, not an ICMP probe or the duration of
-an HTTP request. QUIC uses its connection RTT; TCP uses the kernel RTT on Linux
-and a 1 ms placeholder on other platforms. Zero means no active sample is
-available, or OpenCtrl has cleared stale live metrics. It is separate from the
-master's `/tcping` endpoint.
 
 Status meanings:
 
@@ -458,7 +451,7 @@ Status meanings:
 | --- | --- |
 | `stopped` | No child process is active. |
 | `running` | The child process has started and is being monitored. |
-| `error` | Start failed, the child exited with an error, telemetry reported a fatal lifecycle transition, or telemetry became stale. |
+| `error` | Start failed or the child exited with an error. |
 
 ### List Instances
 
@@ -492,7 +485,7 @@ Request body:
 
 | Field | Required | Description |
 | --- | --- | --- |
-| `url` | yes | Nowhere instance URL with a `portal://` or `vector://` scheme. |
+| `url` | yes | Nowhere instance URL with a `portal://`, `vector://` or `egress://` scheme. |
 | `alias` | no | Initial display name. |
 
 Creation rules:
@@ -598,7 +591,7 @@ curl -X PUT "${BASE}/instances/${ID}" \
   -d '{"url":"portal://secret@127.0.0.1:2001"}'
 ```
 
-The URL must use the `portal` or `vector` scheme. If the normalized URL is unchanged,
+The URL must use the `portal`, `vector` or `egress` scheme. If the normalized URL is unchanged,
 OpenCtrl returns `409 Conflict`. Otherwise, the master stops the current child,
 stores the new URL and type, and starts the instance again.
 
@@ -710,16 +703,15 @@ Event types:
 | `create` | Sent after an instance is created. |
 | `update` | Sent when lifecycle state, metadata, counters, or API-key state changes. |
 | `delete` | Sent after an instance is removed. |
-| `log` | Sent for safe telemetry runtime events, completed accesses, and delivery-gap notices. |
+| `log` | Original child stdout/stderr line or bounded fragment. |
 | `shutdown` | Sent when the master is shutting down or when API key regeneration closes SSE clients. |
 
 Each subscriber has a bounded log queue and a separate map of the latest state
-per instance. Metrics are sent every five seconds; status changes and user
+per instance. Statistics are sent every second; status changes and user
 operations are sent immediately. Repeated pending state updates coalesce.
-Log overflow produces a loss notice as the client drains its queue, including
-when no further logs arrive. A client that exceeds the state capacity or cannot
+A client that exceeds the state capacity or cannot
 complete a write within five seconds is disconnected and must reconcile after
-reconnecting. Slow subscribers do not block telemetry reads.
+reconnecting. Slow subscribers are disconnected when their log queue fills.
 
 ### Header-Based SSE
 
@@ -829,7 +821,7 @@ place. Temporary `gob-*.tmp` files in the state directory are removed at load
 time.
 
 On startup, stored non-internal instances are reset to `stopped` with zero live
-metrics. Portal and Vector instances with `restart: true` are auto-started.
+metrics. Portal, Vector and Egress instances with `restart: true` are auto-started.
 Records for unsupported schemes are retained without starting, with an
 operational log explaining why. The internal `********` instance is loaded as
 the source of API key, master ID, and master alias.
@@ -837,8 +829,8 @@ the source of API key, master ID, and master alias.
 The periodic maintenance task runs every hour. On each tick it:
 
 - writes `openctrl.gob.backup`;
-- restarts instances with `restart: true` only when a process failure or fatal
-  Nowhere lifecycle transition made them eligible. Telemetry loss alone is not
+- restarts instances with `restart: true` only after an actual process
+  failure. Telemetry loss alone is not
   restart eligible.
 
 During shutdown, OpenCtrl stops active child processes, saves state, emits SSE
@@ -853,9 +845,12 @@ The master writes operational logs with Go's standard `log` package:
 2026/06/09 12:00:00 Master.run: started: http://127.0.0.1:8080/api/v2
 ```
 
-Nowhere child stdout and stderr are discarded. Safe runtime events, completed
-accesses, and gap notices received from local telemetry are sent to SSE
-subscribers as `log` events. OpenCtrl does not store a log history.
+Nowhere child stdout and stderr are read continuously and forwarded as original
+SSE `log` text. UTC timestamps come from Nowhere; OpenCtrl adds no level, stream
+label or second timestamp. It retains no history. Each stream is ordered; stdout
+and stderr do not have a shared ordering guarantee. Long lines use bounded 16 KiB
+fragments. Readers finish before the child's final state event, with a two-second
+copy-completion limit. A full SSE log queue disconnects that consumer.
 
 ## Security Notes
 
@@ -872,27 +867,22 @@ control:
 
 ## Nowhere Process and Telemetry Contract
 
-The master supervises Nowhere Portal and Vector processes. Set
+The master supervises Nowhere Portal, Vector and Egress processes. Set
 `?bin=/path/to/nowhere` unless OpenCtrl and Nowhere are provided by the same
 executable.
 
 ### Launch
 
 ```text
-<nowhere-binary> <portal-or-vector-url>
+<nowhere-binary> <portal-vector-or-egress-url>
 ```
 
 The child receives the full URL as its first positional argument and runs as
-the same operating-system user. OpenCtrl discovers the protected
-`nowhere.telemetry` registry record belonging to the child PID, validates the
-registry, namespace, endpoint, process identity, and hello identity, then
-subscribes in `detail` mode. There is no TCP fallback or stdout parser.
-
-OpenCtrl uses the fixed telemetry contract defined by Nowhere. The contract has
-no OpenCtrl-specific fields, messages, version negotiation, or replay. See the
-Nowhere telemetry contract for framing, discovery, privacy, and delivery semantics. The supported
-deployment places both processes on the same host or in the same container,
-with the same user, temporary directory, and process namespace.
+the same operating-system user. OpenCtrl validates the `nowhere.telemetry.3`
+registry, namespace, endpoint, peer/process identity and Hello identity, then
+reads the immediate six-field Snapshot and one-second updates. It sends no
+commands and supports only the NW3 contract. Both processes share the host or
+container, user, temporary directory and namespaces.
 
 ### Stop
 
@@ -909,32 +899,26 @@ If the child exits cleanly while it was not being stopped, OpenCtrl resets the
 instance to `stopped`. If the child exits with an error, OpenCtrl marks the
 instance `error`.
 
-The hourly task restarts an instance with `restart: true` only while its
-process-failure or fatal-lifecycle reason still applies. Telemetry loss alone
-does not qualify it for restart.
+The hourly task restarts `restart: true` instances after actual process failure.
+IPC loss does not qualify the process for restart.
 
 ### Metrics, Logs, and Health
 
-Snapshots map logical TCP and UDP counters, active counts, and ping into the
-instance fields. `mode` and `pool` are always zero. Byte totals are cumulative
-across restarts and support the reset operation.
+Snapshots map the four TCP/UDP cumulative payload counters and two active Flow
+counts to instance fields. `mode`, `ping` and `pool` stay zero. OpenCtrl retains
+byte totals across restarts and supports explicit reset. Reconnection replaces
+current process values and does not add them twice.
 
-Safe `runtime_event` messages and completed `access_finish` records become SSE
-`log` events. `access_start` is not logged separately. Telemetry `gap` messages
-and local SSE queue overflow produce visible loss notices. Child stdout and
-stderr are discarded, are not mirrored to OpenCtrl logs, and never change
-instance status.
+stdout contains startup, TLS fingerprint and graceful shutdown information;
+stderr contains original diagnostic error chains. OpenCtrl forwards both streams
+without parsing message contents. It captures errors even when the child fails
+before IPC exists. Logs and Egress reconnection do not change instance status.
 
-Failures before telemetry connects are reported as launch, connection, or exit
-failures; raw child error text is unavailable. Diagnostic logs and certificate
-fingerprints follow Nowhere's own logging policy and are not forwarded.
-
-The child is `running` after a successful process start. It becomes `error` if
-no nonzero snapshot arrives within 15 seconds, or if snapshots later stop for
-the greater of 15 seconds and three advertised telemetry intervals. IPC
-reconnect uses exponential backoff capped at 30 seconds. A fresh snapshot while
-the lifecycle is `READY` restores `running`; observation failure alone never
-qualifies the child for automatic restart.
+The child is `running` after a successful process start. Connect and complete-frame
+read deadlines are five seconds. On timeout OpenCtrl closes IPC, clears active
+counts, retains byte totals and reconnects with backoff capped at 30 seconds.
+It keeps `running` until the process exits or is stopped. SSE overflow disconnects
+the consumer; reconnection sends current instance data without replaying logs.
 
 ## Client Patterns
 
@@ -1156,10 +1140,10 @@ export function redactOpenCtrlValue(value: string) {
 | TCP ping concurrency | 10 |
 | TCP ping dial timeout | 5 seconds |
 | Stop grace period | 5 seconds |
-| Instance health check interval | 5 seconds |
+| IPC snapshot interval | 1 second |
 | State backup and restart check interval | 1 hour |
-| Telemetry startup timeout | 15 seconds without a nonzero snapshot |
-| Telemetry freshness | Greater of 15 seconds or three advertised intervals |
+| IPC connect and complete-frame read deadline | 5 seconds |
+| IPC reconnect backoff | 1 second, capped at 30 seconds |
 | SSE retry hint | 3000 milliseconds |
 | Per-subscriber pending instance states | 1024 |
 | Per-subscriber queued logs | 10 |
@@ -1176,3 +1160,15 @@ Tags matching `v*.*.*` trigger release builds for:
 - Windows `amd64` and `arm64`.
 
 The release workflow sets `main.version` to the tag name.
+
+## NW3 Integration Check
+
+Build both binaries, then run:
+
+```sh
+python3 scripts/check-nw3.py /path/to/openctrl /path/to/nowhere
+```
+
+The check uses isolated state and real Portal, Vector and Egress processes. It
+verifies pipe logs over SSE, six IPC statistics, active Flow cleanup, cumulative
+bytes across restart, explicit reset, startup errors and Egress retry status.

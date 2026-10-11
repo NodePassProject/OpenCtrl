@@ -1,16 +1,16 @@
 # OpenCtrl
 
-OpenCtrl is a control-plane master for Nowhere Portal and Vector instances.
+OpenCtrl is a control-plane master for Nowhere Portal, Vector and Egress instances.
 
 It stores instance definitions, supervises child processes, exposes a versioned
 HTTP API, and streams lifecycle, log, and metric updates over Server-Sent
-Events. Runtime metrics, lifecycle state, and safe event logs come from
-Nowhere's local `nowhere.telemetry` interface.
+Events. Statistics come from the local `nowhere.telemetry.3` IPC; logs are original child
+stdout/stderr text. Process startup and exit determine instance state.
 
 ## Design
 
 - URL-first instance configuration
-- Nowhere Portal and Vector process supervision
+- Nowhere Portal, Vector and Egress process supervision
 - Versioned REST API under `/api/v2`
 - Server-Sent Events for live state
 - Local durable state with backup
@@ -119,14 +119,13 @@ Event types are `initial`, `create`, `update`, `delete`, `log`, and
 OpenCtrl launches managed instances as:
 
 ```text
-<nowhere-binary> <portal-or-vector-url>
+<nowhere-binary> <portal-vector-or-egress-url>
 ```
 
-Only `portal` and `vector` URLs are accepted. OpenCtrl discovers the child by
-its protected local telemetry registry, subscribes in `detail` mode, and maps
-snapshots and lifecycle messages to the REST model. Safe runtime and
-completed-access events become SSE `log` events. Child stdout and stderr are
-discarded and never affect instance state.
+OpenCtrl accepts Portal, Vector and Egress URLs. It reads identity and six
+statistics from the protected NW3 local IPC endpoint. It captures child stdout
+and stderr and forwards their original text as SSE `log` events. Process start
+and exit determine instance status; IPC availability and log contents do not.
 
 The controller and Nowhere must run on the same host or in the same container,
 under the same operating-system user and temporary-directory namespace.
