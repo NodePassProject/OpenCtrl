@@ -294,7 +294,6 @@ export interface MasterInfo {
   ver: string;
   name: string;
   uptime: number;
-  log: string;
   tls: TlsMode;
   crt: string;
   key: string;
@@ -365,7 +364,6 @@ Example response:
   "ver": "dev",
   "name": "127.0.0.1",
   "uptime": 42,
-  "log": "default",
   "tls": "0",
   "crt": "",
   "key": ""
@@ -389,7 +387,6 @@ Example response:
 | `ver` | Build version from `main.version`. |
 | `name` | Hostname from the listen address or certificate server name. |
 | `uptime` | Master process uptime in seconds. |
-| `log` | Compatibility field retained for older clients; currently empty. |
 | `tls`, `crt`, `key` | Effective startup TLS configuration values. |
 
 Linux hosts return platform metrics from `/proc`. Other operating systems
