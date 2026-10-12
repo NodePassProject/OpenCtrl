@@ -4,7 +4,7 @@ OpenCtrl is a control-plane master for Nowhere Portal, Vector and Egress instanc
 
 It stores instance definitions, supervises child processes, exposes a versioned
 HTTP API, and streams lifecycle, log, and metric updates over Server-Sent
-Events. Statistics come from the local `nowhere.telemetry.3` IPC; logs are original child
+Events. Statistics come from the local `nowhere.telemetry` IPC; logs are original child
 stdout/stderr text. Process startup and exit determine instance state.
 
 ## Design

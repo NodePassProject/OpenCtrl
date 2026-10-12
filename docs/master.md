@@ -877,7 +877,7 @@ executable.
 ```
 
 The child receives the full URL as its first positional argument and runs as
-the same operating-system user. OpenCtrl validates the `nowhere.telemetry.3`
+the same operating-system user. OpenCtrl validates the `nowhere.telemetry`
 registry, namespace, endpoint, peer/process identity and Hello identity, then
 reads the immediate six-field Snapshot and one-second updates. It sends no
 commands and supports only the NW3 contract. Both processes share the host or

@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	telemetryProtocol = "nowhere.telemetry.3"
+	telemetryProtocol = "nowhere.telemetry"
 	maxTelemetryFrame = 64 * 1024
 	maxRegistrySize   = 4096
 )
